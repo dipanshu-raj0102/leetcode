@@ -1,4 +1,5 @@
 import re
+import shutil
 from pathlib import Path
 
 import requests
@@ -31,9 +32,6 @@ query questionData($titleSlug: String!) {
 
 
 def load_credentials():
-    if not CONFIG.exists():
-        raise RuntimeError(f"LeetCode config not found: {CONFIG}")
-
     env = dotenv_values(CONFIG)
 
     session = env.get("LEETCODE_SESSION")
@@ -60,9 +58,7 @@ def fetch_question(slug, session, csrf):
 
     payload = {
         "operationName": "questionData",
-        "variables": {
-            "titleSlug": slug
-        },
+        "variables": {"titleSlug": slug},
         "query": QUERY,
     }
 
@@ -104,11 +100,9 @@ def is_placeholder(readme):
     if not readme.exists():
         return True
 
-    content = readme.read_text(encoding="utf-8")
-
     return (
         "Add any notes or explanations about your solution here."
-        in content
+        in readme.read_text(encoding="utf-8")
     )
 
 
@@ -137,183 +131,149 @@ def build_readme(question):
     ]
 
     if tags:
-        lines.extend([
+        lines += [
             "**Topics:** " + ", ".join(tags),
             "",
-        ])
+        ]
 
-    lines.extend([
+    lines += [
         "## Problem",
         "",
         content,
         "",
-    ])
+    ]
 
     if examples:
-        lines.extend([
+        lines += [
             "## Example Testcases",
             "",
             "```text",
             examples.strip(),
             "```",
             "",
-        ])
+        ]
 
     return "\n".join(lines)
 
 
-def build_directory_name(question):
+def directory_name(question):
     number = int(question["questionFrontendId"])
     slug = question["titleSlug"]
 
     return f"{number:04d}-{slug}"
 
 
-def rename_problem_directory(old_dir, question):
-    new_name = build_directory_name(question)
-    new_dir = PROBLEMS / new_name
+def move_solution_to_numbered_dir(old_dir, new_dir):
+    old_solution = old_dir / "solution.c"
+    new_solution = new_dir / "solution.c"
 
-    if old_dir == new_dir:
-        return new_dir
+    if old_solution.exists():
+        # The latest LeetCode submission wins.
+        shutil.move(str(old_solution), str(new_solution))
 
-    if new_dir.exists():
-        print(f"  Target already exists: {new_name}")
-
-        # The numbered directory contains our existing README.
-        # The unnumbered directory contains the freshly synced solution.
-        # Keep the README and update only the solution.
-        old_solution = old_dir / "solution.c"
-        new_solution = new_dir / "solution.c"
-
-        if old_solution.exists():
-            old_solution.replace(new_solution)
-
-        # Remove the now-empty duplicate directory.
-        for item in old_dir.iterdir():
-            if item.name != "solution.c":
-                destination = new_dir / item.name
-
-                if not destination.exists():
-                    item.rename(destination)
-
-        try:
-            old_dir.rmdir()
-        except OSError:
-            pass
-
-        return new_dir
-
-    old_dir.rename(new_dir)
-
-    print(f"  Renamed: {old_dir.name} -> {new_name}")
-
-    return new_dir
+    # Remove the old unnumbered directory.
+    if old_dir.exists():
+        shutil.rmtree(old_dir)
 
 
+def process_problem(problem_dir, session, csrf):
+    name = problem_dir.name
 
+    numbered = re.match(r"^(\d{4})-(.+)$", name)
 
+    if numbered:
+        # Already numbered.
+        if not is_placeholder(problem_dir / "README.md"):
+            return "skip"
 
+        slug = numbered.group(2)
 
+    else:
+        # Newly created by leetcode-sync.
+        slug = name
 
+    slug = slug.replace("_", "-")
 
+    print(f"Fetching: {slug}")
 
+    question = fetch_question(
+        slug,
+        session,
+        csrf,
+    )
 
+    target = PROBLEMS / directory_name(question)
 
+    # --------------------------------------------------
+    # Unnumbered directory created by leetcode-sync
+    # --------------------------------------------------
 
+    if problem_dir != target:
 
+        if target.exists():
+            print(
+                f"  Merging: {name} -> {target.name}"
+            )
 
+            move_solution_to_numbered_dir(
+                problem_dir,
+                target,
+            )
 
+        else:
+            problem_dir.rename(target)
 
+            print(
+                f"  Renamed: {name} -> {target.name}"
+            )
 
+    # --------------------------------------------------
+    # Generate README only if missing/placeholder
+    # --------------------------------------------------
 
+    readme = target / "README.md"
 
+    if is_placeholder(readme):
+        readme.write_text(
+            build_readme(question),
+            encoding="utf-8",
+        )
 
+        return "updated"
 
-
-
-
-
-
-
+    return "renamed"
 
 
 def main():
     session, csrf = load_credentials()
 
-    problem_dirs = [
-        directory
-        for directory in PROBLEMS.iterdir()
-        if directory.is_dir()
+    directories = [
+        p
+        for p in PROBLEMS.iterdir()
+        if p.is_dir()
     ]
 
-    print(f"Total problems: {len(problem_dirs)}")
+    print(f"Total directories: {len(directories)}")
 
     renamed = 0
     updated = 0
+    skipped = 0
     failed = 0
 
-    for problem_dir in problem_dirs:
-
-        name = problem_dir.name
-
-        # Already numbered: 0001-two-sum
-        already_numbered = bool(
-            re.match(r"^\d{4}-", name)
-        )
-
-        # Convert directory name to LeetCode slug.
-        if already_numbered:
-            slug = name[5:]
-        else:
-            slug = name
-
-        slug = slug.replace("_", "-")
-
-        readme = problem_dir / "README.md"
-
-        needs_readme = is_placeholder(readme)
-
-        # Existing numbered directory with complete README:
-        # nothing to do.
-        if already_numbered and not needs_readme:
-            continue
-
+    for directory in directories:
         try:
-            print(f"Fetching: {slug}")
-
-            question = fetch_question(
-                slug,
+            result = process_problem(
+                directory,
                 session,
                 csrf,
             )
 
-            # ----------------------------------------
-            # Rename unnumbered directory
-            # ----------------------------------------
-
-            current_dir = problem_dir
-
-            if not already_numbered:
-                current_dir = rename_problem_directory(
-                    problem_dir,
-                    question,
-                )
-
+            if result == "renamed":
                 renamed += 1
-
-            # ----------------------------------------
-            # Generate README only if necessary
-            # ----------------------------------------
-
-            if needs_readme:
-                new_readme = current_dir / "README.md"
-
-                new_readme.write_text(
-                    build_readme(question),
-                    encoding="utf-8",
-                )
-
+            elif result == "updated":
                 updated += 1
+            else:
+                skipped += 1
 
         except Exception as error:
             failed += 1
@@ -322,6 +282,7 @@ def main():
     print()
     print(f"Renamed: {renamed}")
     print(f"Updated: {updated}")
+    print(f"Skipped: {skipped}")
     print(f"Failed:  {failed}")
 
 
