@@ -1,0 +1,8 @@
+printf '%s\n' \
+'.venv/' \
+'__pycache__/' \
+'*.pyc' \
+'.env' \
+'*.log' \
+'.DS_Store' \
+> .gitignore
