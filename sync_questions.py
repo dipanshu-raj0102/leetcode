@@ -32,6 +32,9 @@ query questionData($titleSlug: String!) {
 
 
 def load_credentials():
+    if not CONFIG.exists():
+        raise RuntimeError(f"LeetCode config not found: {CONFIG}")
+
     env = dotenv_values(CONFIG)
 
     session = env.get("LEETCODE_SESSION")
@@ -90,7 +93,7 @@ def clean_markdown(content):
 
     text = markdownify(
         str(soup),
-        heading_style="ATX"
+        heading_style="ATX",
     )
 
     return re.sub(r"\n{3,}", "\n\n", text).strip()
@@ -131,68 +134,117 @@ def build_readme(question):
     ]
 
     if tags:
-        lines += [
+        lines.extend([
             "**Topics:** " + ", ".join(tags),
             "",
-        ]
+        ])
 
-    lines += [
+    lines.extend([
         "## Problem",
         "",
         content,
         "",
-    ]
+    ])
 
     if examples:
-        lines += [
+        lines.extend([
             "## Example Testcases",
             "",
             "```text",
             examples.strip(),
             "```",
             "",
-        ]
+        ])
 
     return "\n".join(lines)
 
 
-def directory_name(question):
+def build_directory_name(question):
     number = int(question["questionFrontendId"])
     slug = question["titleSlug"]
 
     return f"{number:04d}-{slug}"
 
 
-def move_solution_to_numbered_dir(old_dir, new_dir):
-    old_solution = old_dir / "solution.c"
-    new_solution = new_dir / "solution.c"
+def get_submission_directories():
+    """
+    Return directories created by leetcode-sync.
 
-    if old_solution.exists():
-        # The latest LeetCode submission wins.
-        shutil.move(str(old_solution), str(new_solution))
+    We intentionally handle:
+        problems/easy/foo
+        problems/medium/bar
+        problems/hard/baz
 
-    # Remove the old unnumbered directory.
-    if old_dir.exists():
-        shutil.rmtree(old_dir)
+    as well as an unnumbered top-level directory if one appears.
+    """
+
+    directories = []
+
+    for difficulty in ("easy", "medium", "hard"):
+        difficulty_dir = PROBLEMS / difficulty
+
+        if not difficulty_dir.is_dir():
+            continue
+
+        for problem_dir in difficulty_dir.iterdir():
+            if problem_dir.is_dir():
+                directories.append(problem_dir)
+
+    # Also handle unexpected unnumbered top-level directories.
+    for problem_dir in PROBLEMS.iterdir():
+        if not problem_dir.is_dir():
+            continue
+
+        if problem_dir.name in ("easy", "medium", "hard"):
+            continue
+
+        if not re.match(r"^\d{4}-", problem_dir.name):
+            directories.append(problem_dir)
+
+    return directories
 
 
-def process_problem(problem_dir, session, csrf):
-    name = problem_dir.name
+def merge_into_numbered_directory(source_dir, target_dir):
+    """
+    Move the latest LeetCode solution into the canonical numbered directory.
 
-    numbered = re.match(r"^(\d{4})-(.+)$", name)
+    Existing README is preserved.
+    """
 
-    if numbered:
-        # Already numbered.
-        if not is_placeholder(problem_dir / "README.md"):
-            return "skip"
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-        slug = numbered.group(2)
+    source_solution = source_dir / "solution.c"
+    target_solution = target_dir / "solution.c"
 
-    else:
-        # Newly created by leetcode-sync.
-        slug = name
+    if source_solution.exists():
+        # Latest LeetCode submission becomes the canonical solution.
+        shutil.move(
+            str(source_solution),
+            str(target_solution),
+        )
 
-    slug = slug.replace("_", "-")
+    # Remove the generated duplicate directory.
+    if source_dir.exists():
+        shutil.rmtree(source_dir)
+
+
+def cleanup_empty_difficulty_dirs():
+    for difficulty in ("easy", "medium", "hard"):
+        directory = PROBLEMS / difficulty
+
+        if not directory.exists():
+            continue
+
+        try:
+            directory.rmdir()
+            print(f"Removed empty directory: problems/{difficulty}")
+        except OSError:
+            # Non-empty directory means something unexpected remains.
+            pass
+
+
+def process_submission_directory(source_dir, session, csrf):
+    slug = source_dir.name.replace("_", "-")
 
     print(f"Fetching: {slug}")
 
@@ -202,36 +254,27 @@ def process_problem(problem_dir, session, csrf):
         csrf,
     )
 
-    target = PROBLEMS / directory_name(question)
+    target_name = build_directory_name(question)
+    target_dir = PROBLEMS / target_name
 
-    # --------------------------------------------------
-    # Unnumbered directory created by leetcode-sync
-    # --------------------------------------------------
+    target_exists = target_dir.exists()
 
-    if problem_dir != target:
-
-        if target.exists():
+    if source_dir != target_dir:
+        if target_exists:
             print(
-                f"  Merging: {name} -> {target.name}"
+                f"  Merging: {source_dir} -> {target_name}"
             )
-
-            move_solution_to_numbered_dir(
-                problem_dir,
-                target,
-            )
-
         else:
-            problem_dir.rename(target)
-
             print(
-                f"  Renamed: {name} -> {target.name}"
+                f"  Creating: {target_name}"
             )
 
-    # --------------------------------------------------
-    # Generate README only if missing/placeholder
-    # --------------------------------------------------
+        merge_into_numbered_directory(
+            source_dir,
+            target_dir,
+        )
 
-    readme = target / "README.md"
+    readme = target_dir / "README.md"
 
     if is_placeholder(readme):
         readme.write_text(
@@ -239,51 +282,132 @@ def process_problem(problem_dir, session, csrf):
             encoding="utf-8",
         )
 
-        return "updated"
+        print(f"  README updated: {target_name}")
 
-    return "renamed"
+    return target_dir
 
 
-def main():
-    session, csrf = load_credentials()
+def process_existing_numbered_directories(session, csrf):
+    """
+    Only generate missing/placeholder READMEs.
 
-    directories = [
-        p
-        for p in PROBLEMS.iterdir()
-        if p.is_dir()
-    ]
+    Existing complete READMEs are never overwritten.
+    """
 
-    print(f"Total directories: {len(directories)}")
-
-    renamed = 0
     updated = 0
-    skipped = 0
     failed = 0
 
-    for directory in directories:
+    for directory in PROBLEMS.iterdir():
+        if not directory.is_dir():
+            continue
+
+        match = re.match(
+            r"^(\d{4})-(.+)$",
+            directory.name,
+        )
+
+        if not match:
+            continue
+
+        readme = directory / "README.md"
+
+        if not is_placeholder(readme):
+            continue
+
+        slug = match.group(2)
+
         try:
-            result = process_problem(
-                directory,
+            print(f"Fetching README: {slug}")
+
+            question = fetch_question(
+                slug,
                 session,
                 csrf,
             )
 
-            if result == "renamed":
-                renamed += 1
-            elif result == "updated":
-                updated += 1
-            else:
-                skipped += 1
+            readme.write_text(
+                build_readme(question),
+                encoding="utf-8",
+            )
+
+            updated += 1
 
         except Exception as error:
             failed += 1
             print(f"  ERROR: {error}")
 
+    return updated, failed
+
+
+def main():
+    session, csrf = load_credentials()
+
+    renamed = 0
+    readmes_updated = 0
+    failed = 0
+
+    # --------------------------------------------------
+    # Process the folders freshly created by leetcode-sync
+    # --------------------------------------------------
+
+    submission_dirs = get_submission_directories()
+
+    print(
+        f"New submission directories: {len(submission_dirs)}"
+    )
+
+    for source_dir in submission_dirs:
+        try:
+            process_submission_directory(
+                source_dir,
+                session,
+                csrf,
+            )
+
+            renamed += 1
+
+        except Exception as error:
+            failed += 1
+            print(
+                f"  ERROR processing {source_dir.name}: {error}"
+            )
+
+    cleanup_empty_difficulty_dirs()
+
+    # --------------------------------------------------
+    # Generate missing READMEs for numbered directories
+    # --------------------------------------------------
+
+    updated, readme_failed = process_existing_numbered_directories(
+        session,
+        csrf,
+    )
+
+    readmes_updated += updated
+    failed += readme_failed
+
+    # --------------------------------------------------
+    # Final state
+    # --------------------------------------------------
+
+    numbered_dirs = [
+        directory
+        for directory in PROBLEMS.iterdir()
+        if directory.is_dir()
+        and re.match(r"^\d{4}-", directory.name)
+    ]
+
+    solutions = list(PROBLEMS.glob("*/solution.c"))
+
     print()
-    print(f"Renamed: {renamed}")
-    print(f"Updated: {updated}")
-    print(f"Skipped: {skipped}")
-    print(f"Failed:  {failed}")
+    print(f"Numbered problems: {len(numbered_dirs)}")
+    print(f"C solutions:       {len(solutions)}")
+    print(f"Processed:          {renamed}")
+    print(f"READMEs updated:    {readmes_updated}")
+    print(f"Failed:             {failed}")
+
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
