@@ -162,29 +162,83 @@ def build_readme(question):
     return "\n".join(lines)
 
 
+def build_directory_name(question):
+    number = int(question["questionFrontendId"])
+    slug = question["titleSlug"]
+
+    return f"{number:04d}-{slug}"
+
+
+def rename_problem_directory(old_dir, question):
+    new_name = build_directory_name(question)
+    new_dir = PROBLEMS / new_name
+
+    if old_dir == new_dir:
+        return new_dir
+
+    if new_dir.exists():
+        print(f"  Target already exists: {new_name}")
+
+        for item in old_dir.iterdir():
+            destination = new_dir / item.name
+
+            if not destination.exists():
+                item.rename(destination)
+
+        try:
+            old_dir.rmdir()
+        except OSError:
+            pass
+
+        return new_dir
+
+    old_dir.rename(new_dir)
+
+    print(f"  Renamed: {old_dir.name} -> {new_name}")
+
+    return new_dir
+
+
 def main():
     session, csrf = load_credentials()
 
-    readmes = list(PROBLEMS.glob("*/README.md"))
-
-    pending = [
-        readme
-        for readme in readmes
-        if is_placeholder(readme)
+    problem_dirs = [
+        directory
+        for directory in PROBLEMS.iterdir()
+        if directory.is_dir()
     ]
 
-    print(f"Total problems: {len(readmes)}")
-    print(f"Questions needing sync: {len(pending)}")
+    print(f"Total problems: {len(problem_dirs)}")
 
-    if not pending:
-        print("All question READMEs are already synced.")
-        return
-
+    renamed = 0
     updated = 0
     failed = 0
 
-    for readme in pending:
-        slug = readme.parent.name.replace("_", "-")
+    for problem_dir in problem_dirs:
+
+        name = problem_dir.name
+
+        # Already numbered: 0001-two-sum
+        already_numbered = bool(
+            re.match(r"^\d{4}-", name)
+        )
+
+        # Convert directory name to LeetCode slug.
+        if already_numbered:
+            slug = name[5:]
+        else:
+            slug = name
+
+        slug = slug.replace("_", "-")
+
+        readme = problem_dir / "README.md"
+
+        needs_readme = is_placeholder(readme)
+
+        # Existing numbered directory with complete README:
+        # nothing to do.
+        if already_numbered and not needs_readme:
+            continue
 
         try:
             print(f"Fetching: {slug}")
@@ -195,18 +249,40 @@ def main():
                 csrf,
             )
 
-            readme.write_text(
-                build_readme(question),
-                encoding="utf-8",
-            )
+            # ----------------------------------------
+            # Rename unnumbered directory
+            # ----------------------------------------
 
-            updated += 1
+            current_dir = problem_dir
+
+            if not already_numbered:
+                current_dir = rename_problem_directory(
+                    problem_dir,
+                    question,
+                )
+
+                renamed += 1
+
+            # ----------------------------------------
+            # Generate README only if necessary
+            # ----------------------------------------
+
+            if needs_readme:
+                new_readme = current_dir / "README.md"
+
+                new_readme.write_text(
+                    build_readme(question),
+                    encoding="utf-8",
+                )
+
+                updated += 1
 
         except Exception as error:
             failed += 1
             print(f"  ERROR: {error}")
 
     print()
+    print(f"Renamed: {renamed}")
     print(f"Updated: {updated}")
     print(f"Failed:  {failed}")
 

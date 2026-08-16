@@ -6,6 +6,10 @@ set -l SYNC "$ROOT/.venv/bin/leetcode-sync"
 
 cd $ROOT
 
+# --------------------------------------------------
+# Sync LeetCode submissions
+# --------------------------------------------------
+
 echo "==> Syncing LeetCode submissions..."
 
 $SYNC --sync
@@ -22,6 +26,7 @@ end
 echo "==> Flattening problem directories..."
 
 for difficulty in easy medium hard
+
     set -l DIR "$ROOT/problems/$difficulty"
 
     if not test -d "$DIR"
@@ -29,6 +34,7 @@ for difficulty in easy medium hard
     end
 
     for problem in "$DIR"/*
+
         if not test -d "$problem"
             continue
         end
@@ -37,13 +43,17 @@ for difficulty in easy medium hard
         set -l destination "$ROOT/problems/$name"
 
         if test -e "$destination"
+
             echo "  Merging: $name"
 
             cp -rn "$problem"/. "$destination"/
             rm -rf "$problem"
+
         else
+
             echo "  Moving: $name"
             mv "$problem" "$destination"
+
         end
     end
 
@@ -51,7 +61,7 @@ for difficulty in easy medium hard
 end
 
 # --------------------------------------------------
-# Sync question statements
+# Generate question README + numbered directories
 # --------------------------------------------------
 
 echo "==> Updating problem statements..."
@@ -85,6 +95,10 @@ if test $status -ne 0
     exit 1
 end
 
+# --------------------------------------------------
+# Push
+# --------------------------------------------------
+
 echo "==> Pushing to GitHub..."
 
 git push
@@ -94,4 +108,4 @@ if test $status -ne 0
     exit 1
 end
 
-echo "==> LeetCode → GitHub sync complete."
+echo "==> LeetCode -> GitHub sync complete."
