@@ -165,7 +165,7 @@ def build_readme(question):
 def main():
     session, csrf = load_credentials()
 
-    readmes = list(PROBLEMS.glob("*/*/README.md"))
+    readmes = list(PROBLEMS.glob("*/README.md"))
 
     pending = [
         readme
