@@ -1,4 +1,3 @@
-import os
 import re
 from pathlib import Path
 
@@ -41,7 +40,7 @@ def load_credentials():
     csrf = env.get("CSRFTOKEN")
 
     if not session or not csrf:
-        raise RuntimeError("Missing LEETCODE_SESSION or CSRFTOKEN")
+        raise RuntimeError("Missing LeetCode credentials")
 
     return session, csrf
 
@@ -61,7 +60,9 @@ def fetch_question(slug, session, csrf):
 
     payload = {
         "operationName": "questionData",
-        "variables": {"titleSlug": slug},
+        "variables": {
+            "titleSlug": slug
+        },
         "query": QUERY,
     }
 
@@ -91,13 +92,24 @@ def fetch_question(slug, session, csrf):
 def clean_markdown(content):
     soup = BeautifulSoup(content, "html.parser")
 
-    # Convert HTML to Markdown.
-    text = markdownify(str(soup), heading_style="ATX")
+    text = markdownify(
+        str(soup),
+        heading_style="ATX"
+    )
 
-    # Normalize excessive blank lines.
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
-    return text.strip()
+
+def is_placeholder(readme):
+    if not readme.exists():
+        return True
+
+    content = readme.read_text(encoding="utf-8")
+
+    return (
+        "Add any notes or explanations about your solution here."
+        in content
+    )
 
 
 def build_readme(question):
@@ -155,13 +167,25 @@ def main():
 
     readmes = list(PROBLEMS.glob("*/*/README.md"))
 
-    print(f"Found {len(readmes)} problems.")
+    pending = [
+        readme
+        for readme in readmes
+        if is_placeholder(readme)
+    ]
+
+    print(f"Total problems: {len(readmes)}")
+    print(f"Questions needing sync: {len(pending)}")
+
+    if not pending:
+        print("All question READMEs are already synced.")
+        return
 
     updated = 0
     failed = 0
 
-    for readme in readmes:
+    for readme in pending:
         slug = readme.parent.name.replace("_", "-")
+
         try:
             print(f"Fetching: {slug}")
 
@@ -178,9 +202,9 @@ def main():
 
             updated += 1
 
-        except Exception as e:
+        except Exception as error:
             failed += 1
-            print(f"  ERROR: {e}")
+            print(f"  ERROR: {error}")
 
     print()
     print(f"Updated: {updated}")
