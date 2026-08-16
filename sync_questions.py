@@ -179,11 +179,22 @@ def rename_problem_directory(old_dir, question):
     if new_dir.exists():
         print(f"  Target already exists: {new_name}")
 
-        for item in old_dir.iterdir():
-            destination = new_dir / item.name
+        # The numbered directory contains our existing README.
+        # The unnumbered directory contains the freshly synced solution.
+        # Keep the README and update only the solution.
+        old_solution = old_dir / "solution.c"
+        new_solution = new_dir / "solution.c"
 
-            if not destination.exists():
-                item.rename(destination)
+        if old_solution.exists():
+            old_solution.replace(new_solution)
+
+        # Remove the now-empty duplicate directory.
+        for item in old_dir.iterdir():
+            if item.name != "solution.c":
+                destination = new_dir / item.name
+
+                if not destination.exists():
+                    item.rename(destination)
 
         try:
             old_dir.rmdir()
@@ -197,6 +208,33 @@ def rename_problem_directory(old_dir, question):
     print(f"  Renamed: {old_dir.name} -> {new_name}")
 
     return new_dir
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def main():
