@@ -2,7 +2,7 @@
 
 | Difficulty | Count |
 |------------|--------|
-| Easy       | 48 |
+| Easy       | 50 |
 | Medium     | 24 |
 | Hard       | 3 |
-| Total      | 75 |
+| Total      | 77 |
